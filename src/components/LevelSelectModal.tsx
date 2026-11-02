@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { CAMPAIGN_LEVELS } from '../game/levels';
 import { SavedGameState } from '../game/logic';
 import { sound } from '../game/audio';
@@ -8,6 +8,7 @@ interface LevelSelectModalProps {
   savedState: SavedGameState;
   onSelectLevel: (levelId: number) => void;
   onClose: () => void;
+  onResetProgress?: () => void;
 }
 
 export const LevelSelectModal: React.FC<LevelSelectModalProps> = ({
@@ -15,7 +16,10 @@ export const LevelSelectModal: React.FC<LevelSelectModalProps> = ({
   savedState,
   onSelectLevel,
   onClose,
+  onResetProgress,
 }) => {
+  const [confirmingReset, setConfirmingReset] = useState(false);
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 select-none animate-fadeIn"
@@ -108,10 +112,52 @@ export const LevelSelectModal: React.FC<LevelSelectModalProps> = ({
           })}
         </div>
 
-        {/* Future Chapter Roadmaps preview (GDD Part 7) */}
-        <div className="bg-[#292833]/5 border-2 border-[#292833]/15 rounded-2xl p-3 text-center text-xs font-bold text-[#292833]">
-          <span>🚀 Chapters 2–7 (Office Meltdown, Weather & Wildlife, Size Matters) · </span>
-          <span className="text-[#FF6B70]">Production Roadmap Target: 100 Handcrafted Levels</span>
+        {/* Footer: Future Chapter Roadmaps & Reset Progress */}
+        <div className="flex flex-col sm:flex-row items-center justify-between gap-3 bg-[#292833]/5 border-2 border-[#292833]/15 rounded-2xl p-3 text-xs font-bold text-[#292833]">
+          <div>
+            <span>🚀 Chapters 2–7 · </span>
+            <span className="text-[#FF6B70]">Roadmap Target: 100 Handcrafted Levels</span>
+          </div>
+
+          {onResetProgress && (
+            !confirmingReset ? (
+              <button
+                onClick={() => {
+                  sound.playSelect();
+                  setConfirmingReset(true);
+                }}
+                aria-label="Reset progress"
+                className="px-3 py-1.5 rounded-xl bg-red-100 hover:bg-red-200 text-red-900 border-2 border-[#292833] font-black text-xs transition-all cursor-pointer shrink-0"
+              >
+                🗑️ RESET PROGRESS
+              </button>
+            ) : (
+              <div className="flex items-center gap-2 shrink-0">
+                <span className="text-[11px] font-black text-red-700">Confirm reset?</span>
+                <button
+                  onClick={() => {
+                    sound.playUndo();
+                    setConfirmingReset(false);
+                    onResetProgress();
+                  }}
+                  aria-label="Confirm reset progress"
+                  className="px-2.5 py-1 rounded-lg bg-[#FF6B70] hover:bg-red-600 text-white border-2 border-[#292833] font-black text-xs cursor-pointer"
+                >
+                  YES, RESET
+                </button>
+                <button
+                  onClick={() => {
+                    sound.playSelect();
+                    setConfirmingReset(false);
+                  }}
+                  aria-label="Cancel reset progress"
+                  className="px-2.5 py-1 rounded-lg bg-white hover:bg-slate-100 text-[#292833] border-2 border-[#292833] font-black text-xs cursor-pointer"
+                >
+                  CANCEL
+                </button>
+              </div>
+            )
+          )}
         </div>
       </div>
     </div>

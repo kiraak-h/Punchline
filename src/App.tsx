@@ -1,12 +1,16 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { CAMPAIGN_LEVELS } from './game/levels';
-import { GameScreen, MedalType, PatchAction, ToolType } from './game/types';
+import { GameMode, GameScreen, MedalType, PatchAction, ToolType } from './game/types';
 import {
   calculateMedal,
+  getCurrentUtcDateString,
+  getDailyChallengeLevel,
   loadSavedGameState,
+  recordCampaignCompletion,
+  recordDailyCompletion,
+  resetSavedGameState,
   saveGameState,
   SavedGameState,
-  validatePatch,
 } from './game/logic';
 import { sound } from './game/audio';
 import { TitleScreen } from './components/TitleScreen';
@@ -21,6 +25,7 @@ import { DailyChallengeModal } from './components/DailyChallengeModal';
 export default function App() {
   const [savedState, setSavedState] = useState<SavedGameState>(() => loadSavedGameState());
   const [screen, setScreen] = useState<GameScreen>('title');
+  const [gameMode, setGameMode] = useState<GameMode>('campaign');
   const [currentLevelId, setCurrentLevelId] = useState<number>(1);
   const [activeTool, setActiveTool] = useState<ToolType | null>(null);
   const [patch, setPatch] = useState<PatchAction | null>(null);
@@ -51,7 +56,13 @@ export default function App() {
   const levelStartTimeRef = useRef<number>(Date.now());
   const attemptsRef = useRef<number>(1);
 
-  const currentLevel = CAMPAIGN_LEVELS.find((l) => l.id === currentLevelId) || CAMPAIGN_LEVELS[0];
+  const todayUtcStr = getCurrentUtcDateString();
+  const dailyChallengeInfo = getDailyChallengeLevel(todayUtcStr);
+
+  const currentLevel =
+    gameMode === 'daily'
+      ? dailyChallengeInfo.level
+      : CAMPAIGN_LEVELS.find((l) => l.id === currentLevelId) || CAMPAIGN_LEVELS[0];
 
   // Sync state machine to document.body.dataset.state
   useEffect(() => {
@@ -62,13 +73,16 @@ export default function App() {
       else stateVal = 'playing';
     }
     document.body.dataset.state = stateVal;
-  }, [screen, pauseOpen, resultState.show]);
+    document.body.dataset.mode = gameMode;
+  }, [screen, pauseOpen, resultState.show, gameMode]);
 
   // Handle ?autostart=1 query parameter
   useEffect(() => {
     if (typeof window !== 'undefined') {
       const params = new URLSearchParams(window.location.search);
       if (params.get('autostart') === '1') {
+        const modeParam = params.get('mode') === 'daily' ? 'daily' : 'campaign';
+        setGameMode(modeParam);
         setScreen('playing');
         levelStartTimeRef.current = Date.now();
         attemptsRef.current = 1;
@@ -83,7 +97,8 @@ export default function App() {
   }, [savedState]);
 
   // Restart / setup level
-  const initLevel = useCallback((lvlId: number) => {
+  const initLevel = useCallback((lvlId: number, mode: GameMode = 'campaign') => {
+    setGameMode(mode);
     setCurrentLevelId(lvlId);
     setPatch(null);
     setActiveTool(null);
@@ -105,7 +120,13 @@ export default function App() {
 
   const handleStartCampaign = () => {
     setScreen('playing');
-    initLevel(savedState.highestUnlockedLevel || 1);
+    initLevel(savedState.highestUnlockedLevel || 1, 'campaign');
+  };
+
+  const handleResetProgress = () => {
+    const fresh = resetSavedGameState();
+    setSavedState(fresh);
+    initLevel(1, 'campaign');
   };
 
   const handleApplyPatch = (newPatch: PatchAction) => {
@@ -124,31 +145,34 @@ export default function App() {
   const handleSimulationFinish = (success: boolean) => {
     setIsRunning(false);
     const timeSpent = Math.max(1, Math.round((Date.now() - levelStartTimeRef.current) / 1000));
-    const medal = calculateMedal(attemptsRef.current, maxHintStageViewed);
+    const currentAttempts = attemptsRef.current;
+    const medal = calculateMedal(currentAttempts, maxHintStageViewed);
 
     if (success) {
       sound.playVictoryFanfare();
-      // Update saved progress
-      setSavedState((prev) => {
-        const nextUnlocked = Math.max(prev.highestUnlockedLevel, Math.min(10, currentLevel.id + 1));
-        const todayStr = new Date().toISOString().slice(0, 10);
-        const streak = prev.lastDailyDate === todayStr ? prev.dailyStreak : prev.dailyStreak + 1;
-
-        return {
-          ...prev,
-          completedLevels: {
-            ...prev.completedLevels,
-            [currentLevel.id]: {
-              medal,
-              timeSec: timeSpent,
-              attempts: attemptsRef.current,
-            },
-          },
-          highestUnlockedLevel: nextUnlocked,
-          dailyStreak: streak,
-          lastDailyDate: todayStr,
-        };
-      });
+      if (gameMode === 'daily') {
+        const completionDateStr = getCurrentUtcDateString();
+        setSavedState((prev) =>
+          recordDailyCompletion(
+            prev,
+            completionDateStr,
+            currentLevel.id,
+            medal,
+            timeSpent,
+            currentAttempts
+          )
+        );
+      } else {
+        setSavedState((prev) =>
+          recordCampaignCompletion(
+            prev,
+            currentLevel.id,
+            medal,
+            timeSpent,
+            currentAttempts
+          )
+        );
+      }
     } else {
       sound.playFailPunchline();
       attemptsRef.current += 1;
@@ -159,13 +183,17 @@ export default function App() {
       success,
       medal,
       timeSpentSec: timeSpent,
-      attempts: attemptsRef.current,
+      attempts: currentAttempts,
     });
   };
 
   const handleNextLevel = () => {
+    if (gameMode === 'daily') {
+      setScreen('title');
+      return;
+    }
     if (currentLevel.id < CAMPAIGN_LEVELS.length) {
-      initLevel(currentLevel.id + 1);
+      initLevel(currentLevel.id + 1, 'campaign');
     } else {
       setScreen('title');
     }
@@ -192,7 +220,6 @@ export default function App() {
   // Keyboard navigation & Shortcuts hub
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Avoid firing when user is typing in form inputs (none in this game, but clean practice)
       if (['INPUT', 'TEXTAREA'].includes((e.target as HTMLElement)?.tagName)) return;
 
       const key = e.key.toLowerCase();
@@ -273,7 +300,7 @@ export default function App() {
           // Restart level
           e.preventDefault();
           sound.playSelect();
-          initLevel(currentLevel.id);
+          initLevel(currentLevel.id, gameMode);
         } else if (key === 'm') {
           // Mute toggle
           e.preventDefault();
@@ -295,6 +322,7 @@ export default function App() {
     hintOpen,
     levelSelectOpen,
     currentLevel,
+    gameMode,
     initLevel,
   ]);
 
@@ -306,6 +334,13 @@ export default function App() {
     window.addEventListener('blur', handleBlur);
     return () => window.removeEventListener('blur', handleBlur);
   }, []);
+
+  const hintHighlightTargetId =
+    maxHintStageViewed >= 2
+      ? (currentLevel.intendedSolution as { targetId?: string; targetAId?: string })?.targetId ||
+        (currentLevel.intendedSolution as { targetAId?: string })?.targetAId ||
+        null
+      : null;
 
   return (
     <div className="w-screen h-screen overflow-hidden bg-[#FFF2DC] font-sans text-[#292833] select-none">
@@ -329,9 +364,7 @@ export default function App() {
             onApplyPatch={handleApplyPatch}
             isRunning={isRunning}
             onRunFinished={handleSimulationFinish}
-            highlightTargetId={
-              maxHintStageViewed >= 2 ? (currentLevel.intendedSolution as { targetId?: string })?.targetId : null
-            }
+            highlightTargetId={hintHighlightTargetId}
           />
 
           {/* Low-Occlusion HUD Overlay (<15% screen coverage) */}
@@ -348,7 +381,7 @@ export default function App() {
               setMaxHintStageViewed((prev) => Math.max(prev, 1));
               setHintOpen(true);
             }}
-            onRestartLevel={() => initLevel(currentLevel.id)}
+            onRestartLevel={() => initLevel(currentLevel.id, gameMode)}
             onPause={() => setPauseOpen(true)}
             onOpenLevelSelect={() => setLevelSelectOpen(true)}
             isMuted={isMuted}
@@ -374,7 +407,9 @@ export default function App() {
                 setMaxHintStageViewed((prev) => Math.max(prev, 1));
                 setHintOpen(true);
               }}
-              hasNextLevel={currentLevel.id < CAMPAIGN_LEVELS.length}
+              hasNextLevel={gameMode === 'campaign' && currentLevel.id < CAMPAIGN_LEVELS.length}
+              gameMode={gameMode}
+              dailyDayNumber={dailyChallengeInfo.dayNumber}
             />
           )}
 
@@ -396,7 +431,7 @@ export default function App() {
           {pauseOpen && (
             <PauseModal
               onResume={() => setPauseOpen(false)}
-              onRestart={() => initLevel(currentLevel.id)}
+              onRestart={() => initLevel(currentLevel.id, gameMode)}
               onOpenLevelSelect={() => {
                 setPauseOpen(false);
                 setLevelSelectOpen(true);
@@ -407,6 +442,7 @@ export default function App() {
               }}
               isMuted={isMuted}
               onToggleMute={handleToggleMute}
+              onResetProgress={handleResetProgress}
             />
           )}
         </main>
@@ -418,10 +454,11 @@ export default function App() {
           currentLevelId={currentLevelId}
           savedState={savedState}
           onSelectLevel={(lvlId) => {
-            initLevel(lvlId);
+            initLevel(lvlId, 'campaign');
             setScreen('playing');
           }}
           onClose={() => setLevelSelectOpen(false)}
+          onResetProgress={handleResetProgress}
         />
       )}
 
@@ -430,7 +467,7 @@ export default function App() {
         <DailyChallengeModal
           savedState={savedState}
           onPlayDailyLevel={(lvlId) => {
-            initLevel(lvlId);
+            initLevel(lvlId, 'daily');
             setScreen('playing');
           }}
           onClose={() => setDailyModalOpen(false)}

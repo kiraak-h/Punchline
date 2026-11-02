@@ -1,5 +1,11 @@
 import React, { useState } from 'react';
-import { getDailyChallengeLevel, SavedGameState } from '../game/logic';
+import {
+  getCurrentUtcDateString,
+  getDailyChallengeLevel,
+  getEffectiveDailyStreak,
+  isDailyCompletedForDate,
+  SavedGameState,
+} from '../game/logic';
 import { sound } from '../game/audio';
 
 interface DailyChallengeModalProps {
@@ -13,18 +19,24 @@ export const DailyChallengeModal: React.FC<DailyChallengeModalProps> = ({
   onPlayDailyLevel,
   onClose,
 }) => {
-  const todayStr = new Date().toISOString().slice(0, 10);
+  const todayStr = getCurrentUtcDateString();
   const { level, dayNumber } = getDailyChallengeLevel(todayStr);
-  const isCompletedToday = savedState.lastDailyDate === todayStr;
+  const isCompletedToday = isDailyCompletedForDate(savedState, todayStr);
+  const activeStreak = getEffectiveDailyStreak(savedState, todayStr);
+  const todayRecord = savedState.dailyCompletions[todayStr];
   const [copied, setCopied] = useState(false);
 
   const handleShareDaily = () => {
     sound.playSelect();
+    const medalLine = todayRecord
+      ? `MEDAL: ${todayRecord.medal.toUpperCase()}`
+      : 'STATUS: IN PROGRESS';
     const shareText = [
       `PROJECT PUNCHLINE`,
       `DAILY CHALLENGE #${dayNumber.toString().padStart(3, '0')}`,
       `DATE: ${todayStr}`,
-      `STREAK: 🔥 ${savedState.dailyStreak} DAYS`,
+      `STREAK: 🔥 ${activeStreak} DAYS`,
+      medalLine,
       `STATUS: ${isCompletedToday ? '✅ PUZZLE FIXED' : '⏳ IN PROGRESS'}`,
       `CAN YOU FIX IT BETTER?`,
       `#ProjectPunchline #DailyChallenge`,
@@ -65,7 +77,7 @@ export const DailyChallengeModal: React.FC<DailyChallengeModalProps> = ({
           <div className="p-3 bg-white border-2 border-[#292833] rounded-2xl">
             <span className="text-[10px] font-black text-slate-500 uppercase">ACTIVE STREAK</span>
             <div className="text-2xl font-black text-[#FF6B70] my-0.5">
-              🔥 {savedState.dailyStreak} {savedState.dailyStreak === 1 ? 'DAY' : 'DAYS'}
+              🔥 {activeStreak} {activeStreak === 1 ? 'DAY' : 'DAYS'}
             </div>
             <span className="text-[10px] font-bold text-slate-500">UTC Date: {todayStr}</span>
           </div>
@@ -76,7 +88,9 @@ export const DailyChallengeModal: React.FC<DailyChallengeModalProps> = ({
               {isCompletedToday ? 'SOLVED ✅' : 'READY ⚡'}
             </div>
             <span className="text-[10px] font-bold text-slate-500">
-              {isCompletedToday ? 'Streak maintained' : 'Awaiting your fix'}
+              {isCompletedToday && todayRecord
+                ? `Best Medal: ${todayRecord.medal.toUpperCase()}`
+                : 'Awaiting your fix'}
             </span>
           </div>
         </div>

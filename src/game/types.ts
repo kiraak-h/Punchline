@@ -51,6 +51,19 @@ export interface LevelDefinition {
 
 export type MedalType = 'gold' | 'silver' | 'bronze';
 
+export type GameMode = 'campaign' | 'daily';
+
+export interface LevelCompletionRecord {
+  medal: MedalType;
+  timeSec: number;
+  attempts: number;
+}
+
+export interface DailyCompletionRecord extends LevelCompletionRecord {
+  levelId: number;
+  dateStr: string;
+}
+
 export interface LevelScore {
   medal: MedalType;
   attempts: number;
@@ -60,3 +73,4 @@ export interface LevelScore {
 }
 
 export type GameScreen = 'title' | 'playing' | 'paused' | 'level_select' | 'daily_challenge';
+

@@ -2,5 +2,7 @@
   "name": "Project Punchline",
   "description": "Cartoon comedy puzzle game where players repair absurd situations using Swap, Freeze, and Resize reality patches.",
   "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
 }

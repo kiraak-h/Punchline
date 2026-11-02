@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { LevelDefinition, PatchAction, ResizeOption, SceneObject, ToolType } from '../game/types';
-import { isCompatibleSwap } from '../game/logic';
+import { isCompatibleSwap, validatePatch } from '../game/logic';
 import { sound } from '../game/audio';
 import { RaccoonAvatar, ToasterCEOAvatar, PigeonAvatar, GoblinAvatar } from './CartoonCast';
 
@@ -33,13 +33,32 @@ export const CartoonStage: React.FC<CartoonStageProps> = ({
   const startTimeRef = useRef<number | null>(null);
   const shakeRef = useRef<number>(0);
 
+  const levelRef = useRef(level);
+  const patchRef = useRef(patch);
+  const onRunFinishedRef = useRef(onRunFinished);
+
+  useEffect(() => {
+    levelRef.current = level;
+    patchRef.current = patch;
+    onRunFinishedRef.current = onRunFinished;
+  }, [level, patch, onRunFinished]);
+
   // Clear sub-selections when tool changes
   useEffect(() => {
     setSwapSelectionA(null);
     setResizePickerTarget(null);
   }, [activeTool]);
 
-  // Reset simulation states when level or running changes
+  // Reset simulation states when level changes
+  useEffect(() => {
+    setSwapSelectionA(null);
+    setResizePickerTarget(null);
+    setSimProgress(0);
+    setScreenShake({ x: 0, y: 0 });
+    setImpactHappened(false);
+  }, [level.id]);
+
+  // Run deterministic simulation loop when isRunning becomes true
   useEffect(() => {
     if (!isRunning) {
       setSimProgress(0);
@@ -51,25 +70,18 @@ export const CartoonStage: React.FC<CartoonStageProps> = ({
       return;
     }
 
+    const activeLevel = levelRef.current;
+    const activePatch = patchRef.current;
+
     // Start 60fps deterministic simulation loop
     sound.playRunStart();
     startTimeRef.current = performance.now();
     shakeRef.current = 0;
     setImpactHappened(false);
 
-    const isSuccess =
-      patch?.type === level.intendedSolution.type &&
-      (patch.type === 'FREEZE'
-        ? patch.targetId === (level.intendedSolution as { targetId: string }).targetId
-        : patch.type === 'RESIZE'
-        ? patch.targetId === (level.intendedSolution as { targetId: string }).targetId &&
-          patch.size === (level.intendedSolution as { size: ResizeOption }).size
-        : (patch.targetAId === (level.intendedSolution as { targetAId: string; targetBId: string }).targetAId &&
-            patch.targetBId === (level.intendedSolution as { targetAId: string; targetBId: string }).targetBId) ||
-          (patch.targetAId === (level.intendedSolution as { targetAId: string; targetBId: string }).targetBId &&
-            patch.targetBId === (level.intendedSolution as { targetAId: string; targetBId: string }).targetAId));
+    const { success: isSuccess } = validatePatch(activeLevel, activePatch);
 
-    const totalDuration = level.runDurationSec * 1000;
+    const totalDuration = activeLevel.runDurationSec * 1000;
     let impactTriggered = false;
 
     const tick = (now: number) => {
@@ -101,7 +113,7 @@ export const CartoonStage: React.FC<CartoonStageProps> = ({
         animFrameRef.current = requestAnimationFrame(tick);
       } else {
         // Finished
-        onRunFinished(isSuccess);
+        onRunFinishedRef.current(isSuccess);
       }
     };
 
@@ -112,7 +124,7 @@ export const CartoonStage: React.FC<CartoonStageProps> = ({
         cancelAnimationFrame(animFrameRef.current);
       }
     };
-  }, [isRunning, level, patch, onRunFinished]);
+  }, [isRunning]);
 
   // Object manipulation helpers
   const handleObjectClick = (obj: SceneObject) => {
@@ -257,6 +269,9 @@ export const CartoonStage: React.FC<CartoonStageProps> = ({
             return (
               <g
                 key={obj.id}
+                data-testid={`target-${obj.id}`}
+                role="button"
+                aria-label={`Select target ${obj.name}`}
                 className="cursor-pointer group"
                 onClick={() => handleObjectClick(obj)}
               >

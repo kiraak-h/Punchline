@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { sound } from '../game/audio';
 
 interface PauseModalProps {
@@ -8,6 +8,7 @@ interface PauseModalProps {
   onGoToTitle: () => void;
   isMuted: boolean;
   onToggleMute: () => void;
+  onResetProgress?: () => void;
 }
 
 export const PauseModal: React.FC<PauseModalProps> = ({
@@ -17,7 +18,10 @@ export const PauseModal: React.FC<PauseModalProps> = ({
   onGoToTitle,
   isMuted,
   onToggleMute,
+  onResetProgress,
 }) => {
+  const [confirmingReset, setConfirmingReset] = useState(false);
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 select-none animate-fadeIn"
@@ -75,6 +79,50 @@ export const PauseModal: React.FC<PauseModalProps> = ({
             <span>{isMuted ? '🔇' : '🔊'}</span>
             <span>{isMuted ? 'UNMUTE SOUND' : 'MUTE SOUND'}</span>
           </button>
+
+          {onResetProgress && (
+            !confirmingReset ? (
+              <button
+                onClick={() => {
+                  sound.playSelect();
+                  setConfirmingReset(true);
+                }}
+                aria-label="Reset all saved progress"
+                className="w-full py-2.5 rounded-xl bg-red-100 hover:bg-red-200 text-red-900 font-bold text-xs border-2 border-[#292833] transition-all cursor-pointer"
+              >
+                🗑️ RESET ALL PROGRESS
+              </button>
+            ) : (
+              <div className="p-2.5 rounded-xl bg-red-50 border-2 border-red-600 flex flex-col gap-2">
+                <span className="text-[11px] font-black text-red-800 uppercase">
+                  Are you sure? This clears all medals & streaks!
+                </span>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => {
+                      sound.playUndo();
+                      setConfirmingReset(false);
+                      onResetProgress();
+                    }}
+                    aria-label="Confirm reset progress"
+                    className="flex-1 py-2 rounded-lg bg-[#FF6B70] hover:bg-red-600 text-white font-black text-xs border-2 border-[#292833] cursor-pointer"
+                  >
+                    CONFIRM RESET
+                  </button>
+                  <button
+                    onClick={() => {
+                      sound.playSelect();
+                      setConfirmingReset(false);
+                    }}
+                    aria-label="Cancel reset progress"
+                    className="flex-1 py-2 rounded-lg bg-white hover:bg-slate-100 text-[#292833] font-black text-xs border-2 border-[#292833] cursor-pointer"
+                  >
+                    CANCEL
+                  </button>
+                </div>
+              </div>
+            )
+          )}
 
           <button
             onClick={() => {

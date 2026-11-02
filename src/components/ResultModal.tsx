@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { LevelDefinition, MedalType } from '../game/types';
+import { GameMode, LevelDefinition, MedalType } from '../game/types';
 import { formatTime, generateShareText } from '../game/logic';
 import { sound } from '../game/audio';
 import { RaccoonAvatar, ToasterCEOAvatar, PigeonAvatar, GoblinAvatar } from './CartoonCast';
@@ -15,6 +15,8 @@ interface ResultModalProps {
   onRetry: () => void;
   onOpenHint: () => void;
   hasNextLevel: boolean;
+  gameMode?: GameMode;
+  dailyDayNumber?: number;
 }
 
 export const ResultModal: React.FC<ResultModalProps> = ({
@@ -28,12 +30,21 @@ export const ResultModal: React.FC<ResultModalProps> = ({
   onRetry,
   onOpenHint,
   hasNextLevel,
+  gameMode = 'campaign',
+  dailyDayNumber,
 }) => {
   const [copiedShare, setCopiedShare] = useState(false);
 
   const handleShare = () => {
     sound.playSelect();
-    const shareText = generateShareText(level, medal, timeSpentSec, attempts);
+    const shareText = generateShareText(
+      level,
+      medal,
+      timeSpentSec,
+      attempts,
+      gameMode,
+      dailyDayNumber
+    );
     if (navigator.clipboard) {
       navigator.clipboard.writeText(shareText).then(() => {
         setCopiedShare(true);
@@ -66,7 +77,13 @@ export const ResultModal: React.FC<ResultModalProps> = ({
       <div className="relative w-full max-w-lg bg-[#FFF2DC] border-4 border-[#292833] rounded-3xl p-6 sm:p-8 shadow-[0_12px_0_#292833] text-center select-none">
         {/* Banner Pill */}
         <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full border-2 border-[#292833] font-black text-xs sm:text-sm uppercase tracking-wider mb-4 shadow-sm bg-[#292833] text-[#FFF2DC]">
-          <span>{success ? '🎉 REALITY RESTORED' : '💥 CARTOON CATASTROPHE'}</span>
+          <span>
+            {success
+              ? gameMode === 'daily'
+                ? '📅 DAILY CHALLENGE FIXED'
+                : '🎉 REALITY RESTORED'
+              : '💥 CARTOON CATASTROPHE'}
+          </span>
         </div>
 
         {/* Big Outcome Title */}
@@ -143,7 +160,20 @@ export const ResultModal: React.FC<ResultModalProps> = ({
         <div className="flex flex-col sm:flex-row items-center justify-center gap-3">
           {success ? (
             <>
-              {hasNextLevel ? (
+              {gameMode === 'daily' ? (
+                <button
+                  data-start="true"
+                  onClick={() => {
+                    sound.playSelect();
+                    onNextLevel();
+                  }}
+                  aria-label="Return to Title Screen"
+                  className="w-full sm:w-auto px-7 py-3.5 rounded-2xl bg-[#83D49B] hover:bg-[#6ee7b7] text-[#292833] font-black text-base border-3 border-[#292833] shadow-[0_4px_0_#292833] hover:shadow-[0_1px_0_#292833] hover:translate-y-1 transition-all active:scale-95 flex items-center justify-center gap-2 cursor-pointer"
+                >
+                  <span>BACK TO TITLE ➔</span>
+                  <span className="text-xs bg-black/20 px-1.5 py-0.5 rounded font-mono">ENTER</span>
+                </button>
+              ) : hasNextLevel ? (
                 <button
                   data-start="true"
                   onClick={() => {
