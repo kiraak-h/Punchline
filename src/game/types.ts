@@ -64,6 +64,12 @@ export interface DailyCompletionRecord extends LevelCompletionRecord {
   dateStr: string;
 }
 
+export interface DailyChallengeSession {
+  dateStr: string;
+  dayNumber: number;
+  level: LevelDefinition;
+}
+
 export interface LevelScore {
   medal: MedalType;
   attempts: number;
@@ -73,4 +79,3 @@ export interface LevelScore {
 }
 
 export type GameScreen = 'title' | 'playing' | 'paused' | 'level_select' | 'daily_challenge';
-

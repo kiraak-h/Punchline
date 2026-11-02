@@ -16,8 +16,8 @@ Project Punchline is a single-player HTML5 cartoon visual-logic puzzle game buil
 - **Authoritative Deterministic Simulation**: Shared validation logic (`validatePatch`) ensures identical inputs always produce identical, testable outcomes.
 - **3-Stage Progressive Hint System**: Direction clue (Stage 1), target highlight (Stage 2), and full solution reveal (Stage 3).
 - **Mastery Medals**: Earn **Gold** (first attempt, no solution hint), **Silver** (solved after retry), or **Bronze** (solved using Stage 3 solution hint).
-- **Global Daily Challenge**: Deterministic UTC calendar day puzzles (`YYYY-MM-DD`) with consecutive day numbering anchored to `2026-01-01`, streak tracking, and isolated daily completion records.
-- **Versioned Save System**: Schema-validated `localStorage` persistence (`project_punchline_save_v2`) with automatic migration from legacy v1 saves, corruption recovery, and confirmed progress reset.
+- **Global Daily Challenge**: Deterministic UTC calendar day puzzles (`YYYY-MM-DD`) with consecutive day numbering anchored to `2026-01-01` (`DAILY_CHALLENGE_LAUNCH_DATE`), session-start snapshots across UTC midnight rollover, streak tracking, and isolated daily completion records.
+- **Versioned Save System**: Schema-validated `localStorage` persistence (`project_punchline_save_v2`) with safe migration from legacy v1 saves (preserving valid campaign progress without fabricating unverified daily records), corruption recovery, and confirmed progress reset.
 - **Procedural Web Audio Synthesizer**: Zero-latency cartoon sound effects and optional bouncy background music loop.
 
 ---
@@ -37,10 +37,11 @@ Project Punchline is a single-player HTML5 cartoon visual-logic puzzle game buil
    cd Punchline
    ```
 
-2. Install dependencies:
+2. Install dependencies cleanly from the committed lockfile:
    ```bash
-   npm install
+   npm ci
    ```
+   *(Or `npm install` when updating dependencies).*
 
 3. (Optional) Configure local environment variables by copying `.env.example`:
    ```bash
@@ -129,15 +130,27 @@ The unit tests verify:
 - Invalid target and capability rejection
 - Swap group compatibility enforcement
 - Gold, Silver, and Bronze medal calculation rules
-- Consecutive UTC day numbering and deterministic daily puzzle selection
+- Consecutive UTC day numbering (`DAILY_CHALLENGE_LAUNCH_DATE = '2026-01-01'`) and deterministic daily puzzle selection
 - Daily streak progression (first solve, same-day replay idempotency, consecutive day increment, missed-day reset)
+- Daily challenge session snapshotting across UTC midnight rollover (`createDailyChallengeSession` / `completeDailyChallengeSession`)
 - Strict separation between Campaign progress and Daily Challenge progress
-- Versioned save schema validation, v1-to-v2 migration, corrupted JSON recovery, and progress reset
+- Versioned save schema validation, contaminated v1 daily state cleanup without fabricated records, genuine v2 record preservation, corrupted JSON recovery, and progress reset
 
-### 3. Browser-Level End-to-End Campaign Tests
+### 3. Browser-Level End-to-End Campaign & Daily Tests
 
-With the dev server running on `http://localhost:3000`, run the automated headless Chromium E2E test suite across all 10 campaign levels:
+The browser E2E suite (`scripts/test-campaign-browser.sh`) uses `@playwright/cli@0.1.22` (pinned in `devDependencies`).
+
+On a clean machine after `npm ci`, install the Chromium browser binary once if not already present:
+
+```bash
+npx playwright install --with-deps chromium
+```
+
+Then run the E2E suite:
 
 ```bash
 npm run test:browser
 ```
+
+- `scripts/test-campaign-browser.sh` automatically checks if `http://localhost:3000` is reachable and starts a local Vite server on port `3000` if needed (cleaning it up on exit).
+- It verifies all 10 campaign levels, confirmed progress reset, end-to-end Daily Challenge completion in daily mode, and strict campaign/daily save isolation.

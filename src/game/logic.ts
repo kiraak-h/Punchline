@@ -1,4 +1,5 @@
 import {
+  DailyChallengeSession,
   DailyCompletionRecord,
   GameMode,
   LevelCompletionRecord,
@@ -259,11 +260,7 @@ export function getUtcDaysDifference(fromDateStr: string, toDateStr: string): nu
  * - Consecutive UTC dates always produce consecutive dayNumbers (N, N+1, N+2...).
  * - Local timezone offsets never affect the calculation.
  */
-export function getDailyChallengeLevel(dateStr: string): {
-  level: LevelDefinition;
-  dayNumber: number;
-  dateStr: string;
-} {
+export function getDailyChallengeLevel(dateStr: string): DailyChallengeSession {
   const normalizedDate = isValidUtcDateString(dateStr) ? dateStr : DAILY_CHALLENGE_LAUNCH_DATE;
   const daysSinceLaunch = getUtcDaysDifference(DAILY_CHALLENGE_LAUNCH_DATE, normalizedDate);
   const dayNumber = Math.max(1, daysSinceLaunch + 1);
@@ -281,6 +278,21 @@ export function getDailyChallengeLevel(dateStr: string): {
     dayNumber,
     dateStr: normalizedDate,
   };
+}
+
+/**
+ * Captures an immutable snapshot of the daily challenge at session start.
+ * Ensures that crossing UTC midnight during an active play session never changes
+ * the active level, displayed daily challenge number, or target completion date.
+ */
+export function createDailyChallengeSession(
+  startTime: Date | string = new Date()
+): DailyChallengeSession {
+  const dateStr =
+    typeof startTime === 'string' && isValidUtcDateString(startTime)
+      ? startTime
+      : getCurrentUtcDateString(startTime instanceof Date ? startTime : new Date());
+  return getDailyChallengeLevel(dateStr);
 }
 
 /**
@@ -345,28 +357,36 @@ function isValidMedal(val: unknown): val is MedalType {
   return val === 'gold' || val === 'silver' || val === 'bronze';
 }
 
+/**
+ * Validates an explicit completion record without fabricating medal, timeSec, or attempts.
+ */
 function sanitizeCompletionRecord(raw: unknown): LevelCompletionRecord | null {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
   const rec = raw as Record<string, unknown>;
   if (!isValidMedal(rec.medal)) return null;
-  const timeSec =
-    typeof rec.timeSec === 'number' && Number.isFinite(rec.timeSec) && rec.timeSec >= 0
-      ? Math.round(rec.timeSec)
-      : 1;
-  const attempts =
-    typeof rec.attempts === 'number' && Number.isFinite(rec.attempts) && rec.attempts >= 1
-      ? Math.floor(rec.attempts)
-      : 1;
+  if (typeof rec.timeSec !== 'number' || !Number.isFinite(rec.timeSec) || rec.timeSec < 0) {
+    return null;
+  }
+  if (typeof rec.attempts !== 'number' || !Number.isFinite(rec.attempts) || rec.attempts < 1) {
+    return null;
+  }
   return {
     medal: rec.medal,
-    timeSec,
-    attempts,
+    timeSec: Math.round(rec.timeSec),
+    attempts: Math.floor(rec.attempts),
   };
 }
 
 /**
  * Validates and migrates raw parsed save data (from v1 or v2) into a guaranteed valid v2 SavedGameState.
- * Recovers gracefully from corrupted, partial, or malformed data.
+ *
+ * Rules:
+ * - Preserves valid campaign completedLevels and highestUnlockedLevel.
+ * - Never treats a legacy dailyStreak / lastDailyDate alone as proof of a genuine daily completion
+ *   (since legacy v1 could increment dailyStreak during campaign completions).
+ * - Preserves daily history ONLY when supported by an explicit, valid dailyCompletions record.
+ * - Never fabricates a completion date, medal, time, or attempts.
+ * - Initializes unverified legacy daily progress safely to zero.
  */
 export function validateAndMigrateSaveState(rawInput: unknown): SavedGameState {
   const fallback = createDefaultSaveState();
@@ -375,7 +395,6 @@ export function validateAndMigrateSaveState(rawInput: unknown): SavedGameState {
   }
 
   const raw = rawInput as Record<string, unknown>;
-  const isV2OrLater = typeof raw.version === 'number' && raw.version >= 2;
 
   // 1. Validate campaign completedLevels
   const completedLevels: Record<number, LevelCompletionRecord> = {};
@@ -407,7 +426,7 @@ export function validateAndMigrateSaveState(rawInput: unknown): SavedGameState {
     highestUnlockedLevel = Math.max(clamped, minUnlockedFromCompleted);
   }
 
-  // 3. Validate dailyCompletions
+  // 3. Validate explicit dailyCompletions records without fabricating fields
   const dailyCompletions: Record<string, DailyCompletionRecord> = {};
   if (
     raw.dailyCompletions &&
@@ -419,48 +438,57 @@ export function validateAndMigrateSaveState(rawInput: unknown): SavedGameState {
       const baseRec = sanitizeCompletionRecord(val);
       if (!baseRec) continue;
       const recObj = val as Record<string, unknown>;
-      const expectedLevelId = getDailyChallengeLevel(dateKey).level.id;
-      const levelId =
-        typeof recObj.levelId === 'number' &&
-        Number.isInteger(recObj.levelId) &&
-        recObj.levelId >= 1 &&
-        recObj.levelId <= CAMPAIGN_LEVELS.length
-          ? recObj.levelId
-          : expectedLevelId;
+      if (recObj.dateStr !== undefined && recObj.dateStr !== dateKey) continue;
+      if (
+        typeof recObj.levelId !== 'number' ||
+        !Number.isInteger(recObj.levelId) ||
+        recObj.levelId < 1 ||
+        recObj.levelId > CAMPAIGN_LEVELS.length
+      ) {
+        continue;
+      }
 
       dailyCompletions[dateKey] = {
         ...baseRec,
-        levelId,
+        levelId: recObj.levelId,
         dateStr: dateKey,
       };
     }
   }
 
   // 4. Validate lastDailyDate and dailyStreak
-  // Note: In v1 saves, a bug incremented dailyStreak during campaign completions without dailyCompletions.
-  // For v1 migration: if dailyCompletions is missing, only preserve lastDailyDate/dailyStreak if explicitly valid,
-  // and synthesize a dailyCompletion entry for lastDailyDate if dailyStreak > 0 so state is consistent.
+  // Daily history is preserved ONLY when supported by an explicit, valid dailyCompletions record.
   let lastDailyDate: string | null = isValidUtcDateString(raw.lastDailyDate)
     ? raw.lastDailyDate
     : null;
   let dailyStreak: number =
-    typeof raw.dailyStreak === 'number' && Number.isFinite(raw.dailyStreak) && raw.dailyStreak >= 0
+    typeof raw.dailyStreak === 'number' && Number.isFinite(raw.dailyStreak) && raw.dailyStreak >= 1
       ? Math.floor(raw.dailyStreak)
       : 0;
 
-  if (!lastDailyDate || dailyStreak === 0) {
+  const validDailyDates = Object.keys(dailyCompletions).sort();
+  if (validDailyDates.length === 0) {
     lastDailyDate = null;
     dailyStreak = 0;
-  } else if (!isV2OrLater && !dailyCompletions[lastDailyDate]) {
-    // Migrate v1 daily state into dailyCompletions so v2 state is self-consistent
-    const dailyInfo = getDailyChallengeLevel(lastDailyDate);
-    dailyCompletions[lastDailyDate] = {
-      levelId: dailyInfo.level.id,
-      dateStr: lastDailyDate,
-      medal: 'gold',
-      timeSec: 30,
-      attempts: 1,
-    };
+  } else {
+    if (!lastDailyDate || !dailyCompletions[lastDailyDate]) {
+      lastDailyDate = validDailyDates[validDailyDates.length - 1];
+    }
+    // Count how many consecutive UTC days ending at lastDailyDate exist in dailyCompletions
+    let verifiedConsecutiveDays = 1;
+    let cursorDate = lastDailyDate;
+    for (let i = validDailyDates.indexOf(lastDailyDate) - 1; i >= 0; i--) {
+      const prevDate = validDailyDates[i];
+      if (getUtcDaysDifference(prevDate, cursorDate) === 1) {
+        verifiedConsecutiveDays += 1;
+        cursorDate = prevDate;
+      } else if (getUtcDaysDifference(prevDate, cursorDate) > 1) {
+        break;
+      }
+    }
+    if (dailyStreak < 1 || dailyStreak > verifiedConsecutiveDays) {
+      dailyStreak = verifiedConsecutiveDays;
+    }
   }
 
   return {
@@ -628,6 +656,27 @@ export function recordDailyCompletion(
       [validDate]: updatedDailyRecord,
     },
   };
+}
+
+/**
+ * Records completion of an active daily challenge session against the session's
+ * captured start date and level (even if completed after UTC midnight).
+ */
+export function completeDailyChallengeSession(
+  state: SavedGameState,
+  session: DailyChallengeSession,
+  medal: MedalType,
+  timeSec: number,
+  attempts: number
+): SavedGameState {
+  return recordDailyCompletion(
+    state,
+    session.dateStr,
+    session.level.id,
+    medal,
+    timeSec,
+    attempts
+  );
 }
 
 /**

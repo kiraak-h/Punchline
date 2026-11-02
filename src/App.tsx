@@ -1,13 +1,19 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { CAMPAIGN_LEVELS } from './game/levels';
-import { GameMode, GameScreen, MedalType, PatchAction, ToolType } from './game/types';
+import {
+  DailyChallengeSession,
+  GameMode,
+  GameScreen,
+  MedalType,
+  PatchAction,
+  ToolType,
+} from './game/types';
 import {
   calculateMedal,
-  getCurrentUtcDateString,
-  getDailyChallengeLevel,
+  completeDailyChallengeSession,
+  createDailyChallengeSession,
   loadSavedGameState,
   recordCampaignCompletion,
-  recordDailyCompletion,
   resetSavedGameState,
   saveGameState,
   SavedGameState,
@@ -27,6 +33,8 @@ export default function App() {
   const [screen, setScreen] = useState<GameScreen>('title');
   const [gameMode, setGameMode] = useState<GameMode>('campaign');
   const [currentLevelId, setCurrentLevelId] = useState<number>(1);
+  const [dailySession, setDailySession] = useState<DailyChallengeSession | null>(null);
+  const dailySessionRef = useRef<DailyChallengeSession | null>(null);
   const [activeTool, setActiveTool] = useState<ToolType | null>(null);
   const [patch, setPatch] = useState<PatchAction | null>(null);
   const [isRunning, setIsRunning] = useState<boolean>(false);
@@ -56,12 +64,9 @@ export default function App() {
   const levelStartTimeRef = useRef<number>(Date.now());
   const attemptsRef = useRef<number>(1);
 
-  const todayUtcStr = getCurrentUtcDateString();
-  const dailyChallengeInfo = getDailyChallengeLevel(todayUtcStr);
-
   const currentLevel =
-    gameMode === 'daily'
-      ? dailyChallengeInfo.level
+    gameMode === 'daily' && dailySession
+      ? dailySession.level
       : CAMPAIGN_LEVELS.find((l) => l.id === currentLevelId) || CAMPAIGN_LEVELS[0];
 
   // Sync state machine to document.body.dataset.state
@@ -82,6 +87,15 @@ export default function App() {
       const params = new URLSearchParams(window.location.search);
       if (params.get('autostart') === '1') {
         const modeParam = params.get('mode') === 'daily' ? 'daily' : 'campaign';
+        if (modeParam === 'daily') {
+          const captured = createDailyChallengeSession();
+          dailySessionRef.current = captured;
+          setDailySession(captured);
+          setCurrentLevelId(captured.level.id);
+        } else {
+          dailySessionRef.current = null;
+          setDailySession(null);
+        }
         setGameMode(modeParam);
         setScreen('playing');
         levelStartTimeRef.current = Date.now();
@@ -96,10 +110,14 @@ export default function App() {
     saveGameState(savedState);
   }, [savedState]);
 
-  // Restart / setup level
+  // Restart / setup level (preserves active dailySession when restarting a daily puzzle)
   const initLevel = useCallback((lvlId: number, mode: GameMode = 'campaign') => {
     setGameMode(mode);
     setCurrentLevelId(lvlId);
+    if (mode === 'campaign') {
+      dailySessionRef.current = null;
+      setDailySession(null);
+    }
     setPatch(null);
     setActiveTool(null);
     setIsRunning(false);
@@ -121,6 +139,14 @@ export default function App() {
   const handleStartCampaign = () => {
     setScreen('playing');
     initLevel(savedState.highestUnlockedLevel || 1, 'campaign');
+  };
+
+  const handleStartDailyChallenge = () => {
+    const captured = createDailyChallengeSession();
+    dailySessionRef.current = captured;
+    setDailySession(captured);
+    initLevel(captured.level.id, 'daily');
+    setScreen('playing');
   };
 
   const handleResetProgress = () => {
@@ -151,12 +177,12 @@ export default function App() {
     if (success) {
       sound.playVictoryFanfare();
       if (gameMode === 'daily') {
-        const completionDateStr = getCurrentUtcDateString();
+        const activeSession =
+          dailySessionRef.current ?? dailySession ?? createDailyChallengeSession();
         setSavedState((prev) =>
-          recordDailyCompletion(
+          completeDailyChallengeSession(
             prev,
-            completionDateStr,
-            currentLevel.id,
+            activeSession,
             medal,
             timeSpent,
             currentAttempts
@@ -189,6 +215,8 @@ export default function App() {
 
   const handleNextLevel = () => {
     if (gameMode === 'daily') {
+      dailySessionRef.current = null;
+      setDailySession(null);
       setScreen('title');
       return;
     }
@@ -409,7 +437,7 @@ export default function App() {
               }}
               hasNextLevel={gameMode === 'campaign' && currentLevel.id < CAMPAIGN_LEVELS.length}
               gameMode={gameMode}
-              dailyDayNumber={dailyChallengeInfo.dayNumber}
+              dailyDayNumber={dailySession?.dayNumber}
             />
           )}
 
@@ -438,6 +466,8 @@ export default function App() {
               }}
               onGoToTitle={() => {
                 setPauseOpen(false);
+                dailySessionRef.current = null;
+                setDailySession(null);
                 setScreen('title');
               }}
               isMuted={isMuted}
@@ -466,9 +496,8 @@ export default function App() {
       {dailyModalOpen && (
         <DailyChallengeModal
           savedState={savedState}
-          onPlayDailyLevel={(lvlId) => {
-            initLevel(lvlId, 'daily');
-            setScreen('playing');
+          onPlayDailyLevel={() => {
+            handleStartDailyChallenge();
           }}
           onClose={() => setDailyModalOpen(false)}
         />

@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { CAMPAIGN_LEVELS } from './levels';
 import {
   calculateMedal,
+  completeDailyChallengeSession,
+  createDailyChallengeSession,
   createDefaultSaveState,
   DAILY_CHALLENGE_LAUNCH_DATE,
   formatTime,
@@ -24,7 +26,7 @@ import {
   validateAndMigrateSaveState,
   validatePatch,
 } from './logic';
-import { PatchAction, SceneObject } from './types';
+import { SceneObject } from './types';
 
 test('All 10 campaign levels validate intended solutions and reject null patches', () => {
   assert.equal(CAMPAIGN_LEVELS.length, 10, 'Must have 10 handcrafted campaign levels');
@@ -324,6 +326,62 @@ test('Daily streak progression: first solve, same-day replay, consecutive day, a
   assert.equal(state.lastDailyDate, '2026-11-05');
 });
 
+test('Daily Challenge session snapshot across UTC midnight rollover', () => {
+  let state = createDefaultSaveState();
+
+  // Player starts Daily Challenge shortly before UTC midnight on 2026-11-01 (23:59:55 UTC)
+  const preMidnightStart = new Date('2026-11-01T23:59:55.000Z');
+  const activeSession = createDailyChallengeSession(preMidnightStart);
+
+  assert.equal(activeSession.dateStr, '2026-11-01');
+  assert.equal(activeSession.dayNumber, 305);
+  assert.equal(activeSession.level.id, 5);
+  assert.match(activeSession.level.title, /\[Daily #305\]/);
+
+  // Clock crosses UTC midnight to 2026-11-02T00:00:10.000Z while player is still in the session
+  const postMidnightClock = new Date('2026-11-02T00:00:10.000Z');
+  const nextDayChallenge = getDailyChallengeLevel(
+    postMidnightClock.toISOString().slice(0, 10)
+  );
+  assert.equal(nextDayChallenge.dateStr, '2026-11-02');
+  assert.equal(nextDayChallenge.dayNumber, 306);
+  assert.equal(nextDayChallenge.level.id, 6);
+
+  // Active session snapshot remains pinned to 2026-11-01 (Day #305, Level 5) even after midnight
+  assert.equal(activeSession.dateStr, '2026-11-01');
+  assert.equal(activeSession.dayNumber, 305);
+  assert.equal(activeSession.level.id, 5);
+
+  // Player completes the active session after UTC midnight:
+  // Completion MUST be recorded against the start date (2026-11-01), NOT 2026-11-02
+  state = completeDailyChallengeSession(state, activeSession, 'silver', 25, 2);
+  assert.equal(state.lastDailyDate, '2026-11-01');
+  assert.equal(state.dailyStreak, 1);
+  assert.equal(isDailyCompletedForDate(state, '2026-11-01'), true);
+  assert.equal(isDailyCompletedForDate(state, '2026-11-02'), false);
+  assert.equal(state.dailyCompletions['2026-11-01'].levelId, 5);
+  assert.equal(state.dailyCompletions['2026-11-01'].medal, 'silver');
+
+  // Restarting/retrying the same active session after midnight still records against 2026-11-01
+  // without incrementing the streak
+  state = completeDailyChallengeSession(state, activeSession, 'gold', 14, 1);
+  assert.equal(state.lastDailyDate, '2026-11-01');
+  assert.equal(state.dailyStreak, 1);
+  assert.equal(state.dailyCompletions['2026-11-01'].medal, 'gold');
+  assert.equal(isDailyCompletedForDate(state, '2026-11-02'), false);
+
+  // Starting a brand-new daily challenge after exiting uses the current post-midnight UTC date (2026-11-02)
+  const newPostMidnightSession = createDailyChallengeSession(postMidnightClock);
+  assert.equal(newPostMidnightSession.dateStr, '2026-11-02');
+  assert.equal(newPostMidnightSession.dayNumber, 306);
+  assert.equal(newPostMidnightSession.level.id, 6);
+
+  state = completeDailyChallengeSession(state, newPostMidnightSession, 'gold', 16, 1);
+  assert.equal(state.lastDailyDate, '2026-11-02');
+  assert.equal(state.dailyStreak, 2, 'Completing the new day challenge increments streak to 2');
+  assert.equal(isDailyCompletedForDate(state, '2026-11-02'), true);
+});
+
 test('Campaign progress and Daily Challenge progress are strictly isolated', () => {
   let state = createDefaultSaveState();
 
@@ -364,40 +422,110 @@ test('Campaign progress and Daily Challenge progress are strictly isolated', () 
   assert.equal(state.dailyCompletions['2026-01-05'].medal, 'gold');
 });
 
-test('Save-data migration, runtime validation, corruption recovery, and reset-progress', () => {
+test('Save-data migration, contaminated v1 daily state cleanup, v2 preservation, and reset-progress', () => {
   // 1. Corrupt / non-object inputs recover safely to default state
   assert.deepEqual(validateAndMigrateSaveState(null), createDefaultSaveState());
   assert.deepEqual(validateAndMigrateSaveState('corrupted-string'), createDefaultSaveState());
   assert.deepEqual(validateAndMigrateSaveState([1, 2, 3]), createDefaultSaveState());
 
-  // 2. Migrate legacy v1 save data to v2 schema
-  const legacyV1Save = {
+  // 2. Contaminated legacy v1 save data (where campaign completions incremented dailyStreak without dailyCompletions):
+  // Must preserve valid campaign completedLevels and highestUnlockedLevel,
+  // MUST NOT fabricate any dailyCompletions entry, and must initialize unverified daily progress to 0 / null.
+  const contaminatedV1Save = {
     completedLevels: {
       1: { medal: 'gold', timeSec: 14, attempts: 1 },
       2: { medal: 'silver', timeSec: 28, attempts: 2 },
       999: { medal: 'gold', timeSec: 10, attempts: 1 }, // Out-of-bounds level ID should be stripped
       3: { medal: 'invalid_medal', timeSec: -5, attempts: 0 }, // Invalid medal should be stripped
+      4: { medal: 'gold' }, // Missing timeSec and attempts must NOT be fabricated
     },
     highestUnlockedLevel: 3,
-    dailyStreak: 2,
+    dailyStreak: 4,
     lastDailyDate: '2026-11-01',
   };
 
-  const migrated = validateAndMigrateSaveState(legacyV1Save);
-  assert.equal(migrated.version, SAVE_SCHEMA_VERSION);
-  assert.equal(migrated.completedLevels[1]?.medal, 'gold');
-  assert.equal(migrated.completedLevels[2]?.medal, 'silver');
-  assert.equal(migrated.completedLevels[999], undefined, 'Out-of-range level ID stripped');
-  assert.equal(migrated.completedLevels[3], undefined, 'Invalid medal record stripped');
-  assert.equal(migrated.highestUnlockedLevel, 3);
-  assert.equal(migrated.dailyStreak, 2);
-  assert.equal(migrated.lastDailyDate, '2026-11-01');
-  assert.ok(
-    migrated.dailyCompletions['2026-11-01'],
-    'Migrated v1 daily completion synthesized for lastDailyDate'
+  const migratedV1 = validateAndMigrateSaveState(contaminatedV1Save);
+  assert.equal(migratedV1.version, SAVE_SCHEMA_VERSION);
+  assert.deepEqual(migratedV1.completedLevels[1], { medal: 'gold', timeSec: 14, attempts: 1 });
+  assert.deepEqual(migratedV1.completedLevels[2], { medal: 'silver', timeSec: 28, attempts: 2 });
+  assert.equal(migratedV1.completedLevels[999], undefined, 'Out-of-range level ID stripped');
+  assert.equal(migratedV1.completedLevels[3], undefined, 'Invalid medal record stripped');
+  assert.equal(migratedV1.completedLevels[4], undefined, 'Incomplete record without time/attempts stripped');
+  assert.equal(migratedV1.highestUnlockedLevel, 3);
+  assert.equal(
+    migratedV1.dailyStreak,
+    0,
+    'Unverified legacy v1 dailyStreak must be reset to 0'
+  );
+  assert.equal(
+    migratedV1.lastDailyDate,
+    null,
+    'Unverified legacy v1 lastDailyDate must be reset to null'
+  );
+  assert.deepEqual(
+    migratedV1.dailyCompletions,
+    {},
+    'Migration must never fabricate a dailyCompletions record from legacy streak/date'
   );
 
-  // 3. Test localStorage integration (migration from v1 key, corruption recovery, and reset)
+  // 3. Preserve genuine existing v2 daily records during normal v2 loading
+  const genuineV2Save = {
+    version: 2,
+    completedLevels: {
+      1: { medal: 'gold', timeSec: 11, attempts: 1 },
+    },
+    highestUnlockedLevel: 2,
+    dailyStreak: 2,
+    lastDailyDate: '2026-11-02',
+    dailyCompletions: {
+      '2026-11-01': {
+        levelId: 5,
+        dateStr: '2026-11-01',
+        medal: 'silver',
+        timeSec: 22,
+        attempts: 2,
+      },
+      '2026-11-02': {
+        levelId: 6,
+        dateStr: '2026-11-02',
+        medal: 'gold',
+        timeSec: 15,
+        attempts: 1,
+      },
+      '2026-11-03': {
+        // Incomplete/fabricated-attempt record missing timeSec & attempts should be rejected
+        levelId: 7,
+        dateStr: '2026-11-03',
+        medal: 'gold',
+      },
+    },
+  };
+
+  const validatedV2 = validateAndMigrateSaveState(genuineV2Save);
+  assert.equal(validatedV2.version, SAVE_SCHEMA_VERSION);
+  assert.equal(validatedV2.dailyStreak, 2);
+  assert.equal(validatedV2.lastDailyDate, '2026-11-02');
+  assert.deepEqual(validatedV2.dailyCompletions['2026-11-01'], {
+    levelId: 5,
+    dateStr: '2026-11-01',
+    medal: 'silver',
+    timeSec: 22,
+    attempts: 2,
+  });
+  assert.deepEqual(validatedV2.dailyCompletions['2026-11-02'], {
+    levelId: 6,
+    dateStr: '2026-11-02',
+    medal: 'gold',
+    timeSec: 15,
+    attempts: 1,
+  });
+  assert.equal(
+    validatedV2.dailyCompletions['2026-11-03'],
+    undefined,
+    'Malformed daily completion missing timeSec/attempts must be rejected'
+  );
+
+  // 4. Test localStorage integration (migration from v1 key, corruption recovery, and reset)
   const store: Record<string, string> = {};
   const mockStorage = {
     getItem: (k: string) => (k in store ? store[k] : null),
@@ -421,10 +549,13 @@ test('Save-data migration, runtime validation, corruption recovery, and reset-pr
   });
 
   // Write legacy v1 data into LEGACY_STORAGE_KEY_V1
-  store[LEGACY_STORAGE_KEY_V1] = JSON.stringify(legacyV1Save);
+  store[LEGACY_STORAGE_KEY_V1] = JSON.stringify(contaminatedV1Save);
   const loadedFromV1 = loadSavedGameState();
   assert.equal(loadedFromV1.version, SAVE_SCHEMA_VERSION);
   assert.equal(loadedFromV1.completedLevels[1]?.medal, 'gold');
+  assert.equal(loadedFromV1.dailyStreak, 0);
+  assert.equal(loadedFromV1.lastDailyDate, null);
+  assert.deepEqual(loadedFromV1.dailyCompletions, {});
   assert.ok(store[LOCAL_STORAGE_KEY], 'Migrated v1 save persisted to v2 key');
 
   // Write corrupted JSON into LOCAL_STORAGE_KEY
@@ -457,3 +588,4 @@ test('Utility formatting and share text generation', () => {
   assert.match(dailyShare, /DAILY CHALLENGE #042/);
   assert.match(dailyShare, /SILVER/);
 });
+
